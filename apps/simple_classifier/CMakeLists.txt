@@ -2,8 +2,8 @@ project(simple_classifier)
 cmake_minimum_required(VERSION 2.8)
 
 include_directories(
-	/opt/intel/computer_vision_sdk_2018.1.265/deployment_tools/inference_engine/include
-	/opt/intel/computer_vision_sdk_2018.1.265/opencv/include/opencv2
+	/opt/intel/computer_vision_sdk/deployment_tools/inference_engine/include
+	/opt/intel/computer_vision_sdk/opencv/include/opencv2
 	)
 
 set(SOURCES
