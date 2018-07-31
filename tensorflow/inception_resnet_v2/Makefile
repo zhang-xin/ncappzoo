@@ -106,7 +106,7 @@ compile_model: deps
 	then \
 		echo "compiled model file already exists, skipping compile."; \
 	else \
-		${NCCOMPILE} --data_type FP16 --input_model $(MODEL_CKPT)_frozen.pb ;\
+		${NCCOMPILE} --data_type FP16 --reverse_input_channels --scale 128 --mean_values [128,128,128] --input_model $(MODEL_CKPT)_frozen.pb ;\
 	fi
 
 
