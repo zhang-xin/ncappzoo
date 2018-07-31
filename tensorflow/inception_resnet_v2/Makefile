@@ -101,7 +101,7 @@ freeze: check_tf checkpoint export
 
 .PHONY: compile_model
 compile_model: deps
-	@echo "\nmaking compile"; \
+	@echo "\nmaking compile_model"; \
 	if [ -e ${GRAPH_FILENAME_BASE}.xml ] ; \
 	then \
 		echo "compiled model file already exists, skipping compile."; \
