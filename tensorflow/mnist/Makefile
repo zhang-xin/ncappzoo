@@ -1,11 +1,11 @@
 
-NCCOMPILE = mvNCCompile
-NCPROFILE = mvNCProfile
-NCCHECK   = mvNCCheck
-
+#NCCOMPILE = python /opt/intel/computer_vision_sdk/deployment_tools/model_optimizer/mo.py
+NCCOMPILE = mo.py
 
 NETWORK_SCRIPT_FILENAME= mnist_deep.py
 GET_NETWORK_SCRIPT = wget -P . https://raw.githubusercontent.com/tensorflow/tensorflow/r1.4/tensorflow/examples/tutorials/mnist/${NETWORK_SCRIPT_FILENAME}
+
+GRAPH_FILENAME_BASE = mnist
 
 MODEL_DATA_FILENAME = mnist_model.data-00000-of-00001
 MODEL_INDEX_FILENAME = mnist_model.index
@@ -154,20 +154,21 @@ profile: model
 	@echo "\nmaking profile"
 	@echo "No profile for this network yet"
 
-.PHONY: browse_profile
-browse_profile: profile
-	@echo "\nmaking browse_profile"
-	@if [ -e output_report.html ] ; \
+
+.PHONY: compile_model
+compile_model: deps
+	@echo "\nmaking compile_model"
+	if [ -e ${GRAPH_FILENAME_BASE}.xml ] ; \
 	then \
-		firefox output_report.html & \
+		echo "compiled model file already exists, skipping compile."; \
 	else \
-		@echo "***\nError - output_report.html not found" ; \
-	fi ; 
+		${NCCOMPILE} --data_type FP16 --input_model ${MODEL_INFERENCE_META_FILENAME} ;\
+	fi
 
 
-.PHONY: compile
-compile: model
-	@echo "\nmaking compile"
+
+.PHONY: compile_model_old
+compile_model_old: deps
 	@if [ -e ${GRAPH_FILENAME} ] ; \
 	then \
 		echo "graph file ${GRAPH_FILENAME} already exists, skipping compile"; \
@@ -200,13 +201,12 @@ help:
 	@echo "possible make targets: ";
 	@echo "  make help - shows this message";
 	@echo "  make all - makes the following: deps, compile";
-	@echo "  make browse_profile - (TBD) runs the SDK profiler tool and brings up report in browser.";
-	@echo "  make check - (TBD) runs SDK checker tool to verify an NCS graph file";
 	@echo "  make clean - removes all created content"
-	@echo "  make compile - runs SDK compiler tool to compile the graph file for the network";
-	@echo "  make deps - downloads and prepares the trained network";
-	@echo "  make profile - (TBD) runs the SDK profiler tool to profile the network creating output_report.html";
-	@echo "  make run - runs the run.py python example program";
+	@echo "  make compile_cpp - builds C++ example to demonstrate the network ";
+	@echo "  make compile_model - runs model compiler for the network";
+	@echo "  make data - downloads required data.";
+	@echo "  make deps - makes dependencies for project, prepares model etc.";
+	@echo "  make run - builds and runs C++ example program";
 	@echo "  make train - creates NCSDK compatible version of TF network and trains it.";
 
 
