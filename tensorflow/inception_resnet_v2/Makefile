@@ -150,7 +150,6 @@ help:
 	@echo "  make data - downloads required data.";
 	@echo "  make deps - makes dependencies for project, prepares model etc.";
 	@echo "  make run - builds and runs C++ example program";
-	@echo "  make clean - removes all created content"
 
 .PHONY: clean
 clean:
