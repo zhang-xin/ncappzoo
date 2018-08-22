@@ -1,7 +1,6 @@
 
-ifneq ($(findstring movidius, $(PYTHONPATH)), movidius)
-	export PYTHONPATH:=/opt/movidius/caffe/python:$(PYTHONPATH)
-endif
+#NCCOMPILE = python /opt/intel/computer_vision_sdk/deployment_tools/model_optimizer/mo.py
+NCCOMPILE = mo.py
 
 NCCOMPILE = mvNCCompile
 NCPROFILE = mvNCProfile
