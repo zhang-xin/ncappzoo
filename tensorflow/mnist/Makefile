@@ -227,5 +227,5 @@ clean: clean
 	rm -f checkpoint
 	rm -f ${MNIST_NCS_FILENAME}
 	rm -f ${MNIST_INFERENCE_FILENAME}
-	rm -f output_expected.npy
+
 
