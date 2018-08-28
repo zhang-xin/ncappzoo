@@ -212,6 +212,10 @@ help:
 
 clean: clean
 	@echo "\nmaking clean"
+	rm -f ${GRAPH_FILENAME_BASE}.bin
+	rm -f ${GRAPH_FILENAME_BASE}.mapping.json
+	rm -f ${GRAPH_FILENAME_BASE}.mapping
+	rm -f ${GRAPH_FILENAME_BASE}.xml
 	rm -f ${GRAPH_FILENAME}
 	rm -f ${MODEL_INFERENCE_META_FILENAME}
 	rm -f ${MODEL_INFERENCE_INDEX_FILENAME}
