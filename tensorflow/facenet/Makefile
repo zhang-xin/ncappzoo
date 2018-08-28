@@ -2,9 +2,9 @@
 #NCCOMPILE = python /opt/intel/computer_vision_sdk/deployment_tools/model_optimizer/mo.py
 NCCOMPILE = mo.py
 
-NCCOMPILE = mvNCCompile
-NCPROFILE = mvNCProfile
-NCCHECK   = mvNCCheck
+#NCCOMPILE = mvNCCompile
+#NCPROFILE = mvNCProfile
+#NCCHECK   = mvNCCheck
 
 # name of the original model files from https://github.com/davidsandberg/facenet
 MODEL_FILENAME_PREFIX_ORIG = model-20170512-110547.ckpt-250000
@@ -27,6 +27,8 @@ MODEL_FILENAME_DATA_NCS = ${MODEL_FILENAME_PREFIX_NCS}.data-00000-of-00001
 MODEL_FILENAME_META_NCS = ${MODEL_FILENAME_PREFIX_NCS}.meta
 MODEL_FILENAME_INDEX_NCS = ${MODEL_FILENAME_PREFIX_NCS}.index
 
+GRAPH_FILENAME_BASE = ${MODEL_FILENAME_PREFIX_NCS}
+
 COMPILE_FULL_COMMAND = ${NCCOMPILE} ${MODEL_FILENAME_META_NCS} -w ${MODEL_FILENAME_PREFIX_NCS} -s 12 -in input -on output -o ${GRAPH_FILENAME}
 
 
@@ -45,16 +47,19 @@ GET_INCEPTION_RESNET = wget -c --no-cache -P . https://raw.githubusercontent.com
 GET_FACENET_ZIPPED_MODEL = ./get_zipped_facenet_model.sh
 
 .PHONY: all
-all: prereqs pictures compile
+all: deps compile_model
+
+.PHONY: deps
+deps: pictures incept_res_py zipped_model
 
 .PHONY: pictures
 pictures:
 	@echo "\nmaking pictures"
 	${GET_PICTURES};
 
-.PHONY: prereqs
-prereqs: pictures
-	@echo "\nmaking prereqs" ; \
+.PHONY: incept_res_py
+incept_res_py: pictures
+	@echo "\nmaking incept_res_py" ; \
 	if [ ! -e ${INCEPTION_RESNET_PY} ] ; \
 	then \
 		${GET_INCEPTION_RESNET} ; \
@@ -65,8 +70,20 @@ prereqs: pictures
 	chmod +x *.py ; \
 
 
-.PHONY: compile
-compile: model
+.PHONY: compile_model
+compile_model: deps
+	@echo "\nmaking compile_model"; \
+	if [ -e ${MODEL_DIR_NCS}/${MODEL_FILENAME_PREFIX_NCS}.xml ] ; \
+	then \
+		echo "compiled model file (${MODEL_DIR_NCS}/${MODEL_FILENAME_PREFIX_NCS}.xml) already exists, skipping compile."; \
+	else \
+		cd ${MODEL_DIR_NCS}; \
+		${NCCOMPILE} --data_type FP16 --framework tf --input_model ${MODEL_FILENAME_PREFIX_NCS}.index; \
+		cd ../..; \
+	fi
+
+.PHONY: compile_old
+compile_old: model
 	@echo "\nmaking compile" ; \
 	if [ -e ${GRAPH_FILENAME} ] ; \
 	then \
@@ -91,7 +108,7 @@ zipped_model:
 	fi
 
 .PHONY: model
-model: prereqs zipped_model
+model: deps
 	@echo "\nmaking model" ; \
 	if [ -e ${MODEL_ZIP_FILENAME} ] ; \
 	then \
@@ -134,12 +151,12 @@ model: prereqs zipped_model
 	fi
 
 .PHONY: run_py
-run_py: prereqs compile
+run_py: deps compile_model
 	@echo "\nmaking run_py"
 	python3 ./run.py
 
 .PHONY: run
-run: prereqs compile
+run: deps compile_model
 	@echo "\nmaking run"
 	python3 ./run.py
 
