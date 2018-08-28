@@ -157,5 +157,6 @@ clean:
 	rm -f inception_resnet_v2* -v
 	rm -f ${GRAPH_FILENAME_BASE}.bin
 	rm -f ${GRAPH_FILENAME_BASE}.mapping.json
+	rm -f ${GRAPH_FILENAME_BASE}.mapping
 	rm -f ${GRAPH_FILENAME_BASE}.xml
 	rm -f labels.txt

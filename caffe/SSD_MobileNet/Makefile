@@ -126,6 +126,7 @@ clean:
 	rm -f ${CAFFEMODEL_FILENAME}
 	rm -f ${GRAPH_FILENAME_BASE}.bin
 	rm -f ${GRAPH_FILENAME_BASE}.mapping.json
+	rm -f ${GRAPH_FILENAME_BASE}.mapping
 	rm -f ${GRAPH_FILENAME_BASE}.xml
 
 
