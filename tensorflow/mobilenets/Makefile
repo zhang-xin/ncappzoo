@@ -1,4 +1,6 @@
 
+NCCOMPILE = mo.py
+
 VERSION?=v1
 DEPTH?=1.0
 IMGSIZE?=224
@@ -21,10 +23,14 @@ OUTPUT_NODE_NAME=MobilenetV1/Predictions/Reshape_1
 YELLOW='\033[1;33m'
 NOCOLOR='\033[0m'
 
-
+SIMPLE_CLASSIFIER_RELATIVE_DIR = ../../apps/simple_classifier
+MODEL_RELATIVE_DIR=./model
+IMAGES_RELATIVE_DIR = ../../data/images
+GRAPH_FILENAME_BASE = $(MODEL_CKPT)_frozen
+TEST_IMAGE_FILENAME = pic_053.jpg
 
 .PHONY: all
-all: profile
+all: deps data compile_model compile_cpp
 
 PROJECT_DIR = $(CURDIR)
 ZOO_RELATIVE_TF_SRC_PROJ = ../tf_src
@@ -32,6 +38,14 @@ ZOO_RELATIVE_TF_MODELS_PROJ = ../tf_models
 ZOO_TF_SRC_PATH = ${PROJECT_DIR}/${ZOO_RELATIVE_TF_SRC_PROJ}/tensorflow
 ZOO_TF_MODELS_PATH = ${PROJECT_DIR}/${ZOO_RELATIVE_TF_MODELS_PROJ}/models
 
+
+.PHONY: deps
+deps: freeze
+	@echo "\nmaking deps"
+
+.PHONY: data
+data: 
+	@echo "\nmaking data - no data required for this project"
 
 # Checks if TF_MODELS_PATH is set.  If it isn't set then will make the
 # tf_models project in the ncappzoo/tensorflow/tf_models directory.
@@ -85,31 +99,67 @@ freeze: check_tf checkpoint export
 		--output_graph=$(MODEL_CKPT)_frozen.pb \
 		--output_node_name=$(OUTPUT_NODE_NAME);)
 
-.PHONY: compile
-compile: freeze
+.PHONY: compile_model
+compile_model: deps
+	@echo $(YELLOW)"\nCompiling model..."$(NOCOLOR); \
+	cd model; \
+	${NCCOMPILE} --data_type FP16 --reverse_input_channels --scale 128 --mean_values [128,128,128] --input_model $(MODEL_CKPT)_frozen.pb; \
+	cd .. ; \
+	echo $(YELLOW)"OpenVINO graph generated!\n"$(NOCOLOR)
+
+
+.PHONY: compile_old
+compile_old: freeze
 	@echo $(YELLOW)"\nCompiling model to Movidius graph..."$(NOCOLOR)
 	(cd model; mvNCCompile -s 12 $(MODEL_CKPT)_frozen.pb -in=input -on=$(OUTPUT_NODE_NAME);)
 	@echo $(YELLOW)"Movidius graph generated! You can run inferences using ncappzoo/apps/image-classifier project.\n"$(NOCOLOR)
 
 .PHONY: profile
 profile: freeze
-	@echo $(YELLOW)"\nProfiling the model..."$(NOCOLOR)
-	(cd model; mvNCProfile -s 12 $(MODEL_CKPT)_frozen.pb -in=input -on=$(OUTPUT_NODE_NAME);)
-	@echo $(YELLOW)"Movidius graph generated! You can run inferences using ncappzoo/apps/image-classifier project.\n"$(NOCOLOR)
+	@echo $(YELLOW)"\nProfiling the model not implemented yet..."$(NOCOLOR)
 
 .PHONY: check
 check: freeze
-	@echo $(YELLOW)"\nComparing results with standard Tensorflow..."$(NOCOLOR)
-	(cd model; mvNCCheck -s 12 $(MODEL_CKPT)_frozen.pb -in=input -on=$(OUTPUT_NODE_NAME);)
-	@echo $(YELLOW)"Movidius graph generated! You can run inferences using ncappzoo/apps/image-classifier project.\n"$(NOCOLOR)
+	@echo $(YELLOW)"\nComparing results with standard Tensorflow not implemented yet..."$(NOCOLOR)
 
 .PHONY: run
-run: compile
+run: run_cpp 
+	@echo "\nmaking run"
+
+.PHONY:	compile_cpp
+compile_cpp:  
+	@echo "\nmaking compile_cpp"
+	(cd ${SIMPLE_CLASSIFIER_RELATIVE_DIR}; make compile_cpp; cd -)
+
+.PHONY: run_cpp
+run_cpp: all
+	@echo "\nmaking run_cpp"
+	${SIMPLE_CLASSIFIER_RELATIVE_DIR}/build/simple_classifier ${MODEL_RELATIVE_DIR}/${GRAPH_FILENAME_BASE}.xml ${IMAGES_RELATIVE_DIR}/${TEST_IMAGE_FILENAME}; 
+
+
+.PHONY: run_old
+run_old: compile_old
 	@echo $(YELLOW)"\nRunning inferences using image-classifier project..."$(NOCOLOR)
 	(python3 ../../apps/image-classifier/image-classifier.py --graph ./model/graph --dim $(IMGSIZE) $(IMGSIZE) --mean 127.5 --scale 0.00789 --colormode "RGB" --labels ./model/labels.txt --image ../../data/images/pic_053.jpg)
 
+
 .PHONY: help
 help:
+	@echo "  make help - Shows this message.";
+	@echo "  make all - make all - everything needed to run, but doesn't run.";
+	@echo "  make clean - removes files created in this directory.";
+	@echo "  make compile_cpp - builds C++ example to demonstrate the network.";
+	@echo "  make compile_model - runs model compiler for the network.";
+	@echo "  make data - downloads required data.";
+	@echo "  make deps - makes dependencies for project, prepares model etc.";
+	@echo "  make run - builds and runs C++ example program.";
+	@echo "  make clean - removes all created content."
+	@echo "  ";
+	@echo "  Note: by default will use version: v1, depth: 1.0, image size: 224"
+
+
+.PHONY: help_old
+help_old:
 	@echo $(YELLOW)"\nPossible make targets: "$(NOCOLOR);
 	@echo "  make help - Shows this message.";
 	@echo "  make all - Builds all dependencies, but does not run this program.";
