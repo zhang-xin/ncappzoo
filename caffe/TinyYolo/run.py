@@ -1,21 +1,29 @@
-#! /usr/bin/env python3
+#!/usr/bin/env python3
+"""
+ Copyright (c) 2018 Intel Corporation
 
-# Copyright(c) 2017 Intel Corporation. 
-# License: MIT See LICENSE file in root directory.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-from mvnc import mvncapi as mvnc
+      http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+"""
+
+from __future__ import print_function
 import sys
-import numpy as np
+import os
+from argparse import ArgumentParser
 import cv2
-
-
-# Assume running in examples/caffe/TinyYolo and graph file is in current directory.
-input_image_file= '../../data/images/nps_chair.png'
-tiny_yolo_graph_file= './graph'
-
-# Tiny Yolo assumes input images are these dimensions.
-NETWORK_IMAGE_WIDTH = 448
-NETWORK_IMAGE_HEIGHT = 448
+import time
+import logging as log
+import numpy as np
+from openvino.inference_engine import IENetwork, IEPlugin
 
 
 # Interpret the output from a single inference of TinyYolo (GetResult)
@@ -32,7 +40,7 @@ NETWORK_IMAGE_HEIGHT = 448
 #    float value for box width in pixels within source image
 #    float value for box height in pixels within source image
 #    float value that is the probability for the network classification.
-def filter_objects(inference_result, input_image_width, input_image_height):
+def filter_objects(inference_result, input_image_width, input_image_height, threshold):
 
     # the raw number of floats returned from the inference (GetResult())
     num_inference_results = len(inference_result)
@@ -43,7 +51,7 @@ def filter_objects(inference_result, input_image_width, input_image_height):
                                "person", "pottedplant", "sheep", "sofa", "train","tvmonitor"]
 
     # only keep boxes with probabilities greater than this
-    probability_threshold = 0.07
+    probability_threshold = threshold
 
     num_classifications = len(network_classifications) # should be 20
     grid_size = 7 # the image is a 7x7 grid.  Each box in the grid is 64x64 pixels
@@ -187,119 +195,153 @@ def get_intersection_over_union(box_1, box_2):
 
     return iou
 
-# Displays a gui window with an image that contains
-# boxes and lables for found objects.  will not return until
-# user presses a key.
-# source_image is the original image for the inference before it was resized or otherwise changed.
-# filtered_objects is a list of lists (as returned from filter_objects()
-# each of the inner lists represent one found object and contain
-# the following 6 values:
-#    string that is network classification ie 'cat', or 'chair' etc
-#    float value for box center X pixel location within source image
-#    float value for box center Y pixel location within source image
-#    float value for box width in pixels within source image
-#    float value for box height in pixels within source image
-#    float value that is the probability for the network classification.
-def display_objects_in_gui(source_image, filtered_objects):
-    # copy image so we can draw on it. Could just draw directly on source image if not concerned about that.
-    display_image = source_image.copy()
-    source_image_width = source_image.shape[1]
-    source_image_height = source_image.shape[0]
 
-    x_ratio = float(source_image_width) / NETWORK_IMAGE_WIDTH
-    y_ratio = float(source_image_height) / NETWORK_IMAGE_HEIGHT
+def build_argparser():
+    parser = ArgumentParser()
+    parser.add_argument("-m", "--model", help="Path to an .xml file with a trained model.", required=True, type=str)
+    parser.add_argument("-i", "--input",
+                        help="Path to video file or image. 'cam' for capturing video stream from camera", required=True,
+                        type=str)
+    parser.add_argument("--labels", help="Labels mapping file", default=None, type=str)
+    parser.add_argument("-pt", "--prob_threshold", help="Probability threshold for detections filtering",
+                        default=0.3, type=float)
 
-    # loop through each box and draw it on the image along with a classification label
-    print('Found this many objects in the image: ' + str(len(filtered_objects)))
-    for obj_index in range(len(filtered_objects)):
-        center_x = int(filtered_objects[obj_index][1] * x_ratio) 
-        center_y = int(filtered_objects[obj_index][2] * y_ratio)
-        half_width = int(filtered_objects[obj_index][3] * x_ratio)//2
-        half_height = int(filtered_objects[obj_index][4] * y_ratio)//2
-
-        # calculate box (left, top) and (right, bottom) coordinates
-        box_left = max(center_x - half_width, 0)
-        box_top = max(center_y - half_height, 0)
-        box_right = min(center_x + half_width, source_image_width)
-        box_bottom = min(center_y + half_height, source_image_height)
-
-        print('box at index ' + str(obj_index) + ' is... left: ' + str(box_left) + ', top: ' + str(box_top) + ', right: ' + str(box_right) + ', bottom: ' + str(box_bottom))  
-
-        #draw the rectangle on the image.  This is hopefully around the object
-        box_color = (0, 255, 0)  # green box
-        box_thickness = 2
-        cv2.rectangle(display_image, (box_left, box_top),(box_right, box_bottom), box_color, box_thickness)
-
-        # draw the classification label string just above and to the left of the rectangle
-        label_background_color = (70, 120, 70) # greyish green background for text
-        label_text_color = (255, 255, 255)   # white text
-        cv2.rectangle(display_image,(box_left, box_top-20),(box_right,box_top), label_background_color, -1)
-        cv2.putText(display_image,filtered_objects[obj_index][0] + ' : %.2f' % filtered_objects[obj_index][5], (box_left+5,box_top-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_text_color, 1)
-
-    window_name = 'TinyYolo (hit key to exit)'
-    cv2.imshow(window_name, display_image)
-
-    while (True):
-        raw_key = cv2.waitKey(1)
-
-        # check if the window is visible, this means the user hasn't closed
-        # the window via the X button (may only work with opencv 3.x
-        prop_val = cv2.getWindowProperty(window_name, cv2.WND_PROP_ASPECT_RATIO)
-        if ((raw_key != -1) or (prop_val < 0.0)):
-            # the user hit a key or closed the window (in that order)
-            break
+    return parser
 
 
-# This function is called from the entry point to do
-# all the work.
 def main():
-    print('Running NCS Caffe TinyYolo example')
+    log.basicConfig(format="[ %(levelname)s ] %(message)s", level=log.INFO, stream=sys.stdout)
+    args = build_argparser().parse_args()
+    model_xml = args.model
+    model_bin = os.path.splitext(model_xml)[0] + ".bin"
+    # Plugin initialization for specified device and load extensions library if specified
+    log.info("Initializing plugin for {} device...".format("MYRIAD"))
+    plugin = IEPlugin(device="MYRIAD")
 
-    # Set logging level to only log errors
-    mvnc.global_set_option(mvnc.GlobalOption.RW_LOG_LEVEL, 3)
-    devices = mvnc.enumerate_devices()
-    if len(devices) == 0:
-        print('No devices found')
-        return 1
-    device = mvnc.Device(devices[0])
-    device.open()
+    # Read IR
+    log.info("Reading IR...")
+    net = IENetwork.from_ir(model=model_xml, weights=model_bin)
 
-    #Load graph from disk and allocate graph via API
-    with open(tiny_yolo_graph_file, mode='rb') as f:
-        graph_from_disk = f.read()
-    graph = mvnc.Graph("Tiny Yolo Graph")
-    fifo_in, fifo_out = graph.allocate_with_fifos(device, graph_from_disk)
+    assert len(net.inputs.keys()) == 1, "Sample supports only single input topologies"
+    assert len(net.outputs) == 1, "Sample supports only single output topologies"
+    input_blob = next(iter(net.inputs))
+    out_blob = next(iter(net.outputs))
+    log.info("Loading IR to the plugin...")
+    exec_net = plugin.load(network=net, num_requests=2)
+    # Read and pre-process input image
+    n, c, h, w = net.inputs[input_blob]
+    del net
+    if args.input == 'cam':
+        input_stream = 0
+    else:
+        input_stream = args.input
+        assert os.path.isfile(args.input), "Specified input file doesn't exist"
+    if args.labels:
+        with open(args.labels, 'r') as f:
+            labels_map = [x.strip() for x in f]
+    else:
+        labels_map = None
 
-    # Read image from file, resize it to network width and height
-    # save a copy in display_image for display, then convert to float32, normalize (divide by 255),
-    # and finally convert to convert to float16 to pass to LoadTensor as input for an inference
-    input_image = cv2.imread(input_image_file)
-    display_image = input_image
-    input_image = cv2.resize(input_image, (NETWORK_IMAGE_WIDTH, NETWORK_IMAGE_HEIGHT), cv2.INTER_LINEAR)
-    input_image = input_image.astype(np.float32)
-    input_image = np.divide(input_image, 255.0)
-    input_image = input_image[:, :, ::-1]  # convert to RGB
+    cap = cv2.VideoCapture(input_stream)
 
-    # Load tensor and get result.  This executes the inference on the NCS
-    graph.queue_inference_with_fifo_elem(fifo_in, fifo_out, input_image.astype(np.float32), None)
-    output, userobj = fifo_out.read_elem()
+    cur_request_id = 0
+    next_request_id = 1
 
-    # filter out all the objects/boxes that don't meet thresholds
-    filtered_objs = filter_objects(output.astype(np.float32), input_image.shape[1], input_image.shape[0])
+    log.info("Starting inference in sync mode...")
+    log.info("To switch between sync and async modes press Tab button")
+    log.info("To stop the sample execution press Esc button")
+    is_async_mode = False
+    render_time = 0
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        initial_w = cap.get(3)
+        initial_h = cap.get(4)
+        in_frame = cv2.resize(frame, (w, h))
+        in_frame = in_frame.transpose((2, 0, 1))  # Change data layout from HWC to CHW
+        in_frame = in_frame.reshape((n, c, h, w))
+        in_frame = np.divide(in_frame, 255.0)
 
-    print('Displaying image with objects detected in GUI')
-    print('Click in the GUI window and hit any key to exit')
-    #display the filtered objects/boxes in a GUI window
-    display_objects_in_gui(display_image, filtered_objs)
+        # Main sync point:
+        # in the truly Async mode we start the NEXT infer request, while waiting for the CURRENT to complete
+        # in the regular mode we start the CURRENT request and immediately wait for it's completion
+        inf_start = time.time()
+        if is_async_mode:
+            exec_net.start_async(request_id=next_request_id, inputs={input_blob: in_frame})
+        else:
+            exec_net.start_async(request_id=cur_request_id, inputs={input_blob: in_frame})
+        if exec_net.requests[cur_request_id].wait(-1) == 0:
+            inf_end = time.time()
+            det_time = inf_end - inf_start
 
-    fifo_in.destroy()
-    fifo_out.destroy()
-    graph.destroy()
-    device.close()
-    device.destroy()
-    print('Finished')
+            # Parse detection results of the current request
+            res = exec_net.requests[cur_request_id].outputs[out_blob]
+
+            # filter out all the objects/boxes that don't meet thresholds
+            filtered_objs = filter_objects(res[0].astype(np.float32), w, h, args.prob_threshold)
+
+            x_ratio = float(initial_w) / w
+            y_ratio = float(initial_h) / h
+
+            # loop through each box and draw it on the image along with a classification label
+            print('Found this many objects in the image: ' + str(len(filtered_objs)))
+            for obj_index in range(len(filtered_objs)):
+                center_x = int(filtered_objs[obj_index][1] * x_ratio)
+                center_y = int(filtered_objs[obj_index][2] * y_ratio)
+                half_width = int(filtered_objs[obj_index][3] * x_ratio)//2
+                half_height = int(filtered_objs[obj_index][4] * y_ratio)//2
+
+                # calculate box (left, top) and (right, bottom) coordinates
+                box_left = max(center_x - half_width, 0)
+                box_top = max(center_y - half_height, 0)
+                box_right = min(center_x + half_width, initial_w)
+                box_bottom = min(center_y + half_height, initial_h)
+
+                print('box at index ' + str(obj_index) + ' is... left: ' + str(box_left) + ', top: ' + str(box_top) + ', right: ' + str(box_right) + ', bottom: ' + str(box_bottom) + ', prob: ' + str(filtered_objs[obj_index][5]))
+
+                #draw the rectangle on the image.  This is hopefully around the object
+                box_color = (0, 255, 0)  # green box
+                box_thickness = 2
+                cv2.rectangle(frame, (box_left, box_top),(box_right, box_bottom), box_color, box_thickness)
+                # draw the classification label string just above and to the left of the rectangle
+                label_background_color = (70, 120, 70) # greyish green background for text
+                label_text_color = (255, 255, 255)   # white text
+                cv2.rectangle(frame, (box_left, box_top-20),(box_right,box_top), label_background_color, -1)
+                cv2.putText(frame, filtered_objs[obj_index][0] + ' : %.2f' % filtered_objs[obj_index][5], (box_left+5,box_top-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, label_text_color, 1)
+
+            # Draw performance stats
+            inf_time_message = "Inference time: N\A for async mode" if is_async_mode else \
+                "Inference time: {:.3f} ms".format(det_time * 1000)
+            render_time_message = "OpenCV rendering time: {:.3f} ms".format(render_time * 1000)
+            async_mode_message = "Async mode is on. Processing request {}".format(cur_request_id) if is_async_mode else \
+                "Async mode is off. Processing request {}".format(cur_request_id)
+
+            cv2.putText(frame, inf_time_message, (15, 15), cv2.FONT_HERSHEY_COMPLEX, 0.5, (200, 10, 10), 1)
+            cv2.putText(frame, render_time_message, (15, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (10, 10, 200), 1)
+            cv2.putText(frame, async_mode_message, (10, int(initial_h - 20)), cv2.FONT_HERSHEY_COMPLEX, 0.5,
+                        (10, 10, 200), 1)
+
+        #
+        render_start = time.time()
+        cv2.imshow("Detection Results", frame)
+        render_end = time.time()
+        render_time = render_end - render_start
+
+        key = cv2.waitKey(0)
+        if key == 27:
+            break
+        if (9 == key):
+            is_async_mode = not is_async_mode
+            log.info("Switched to {} mode".format("async" if is_async_mode else "sync"))
+
+        if is_async_mode:
+            cur_request_id, next_request_id = next_request_id, cur_request_id
+
+    cv2.destroyAllWindows()
+    del exec_net
+    del plugin
 
 
-# main entry point for program. we'll call main() to do what needs to be done.
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    sys.exit(main() or 0)

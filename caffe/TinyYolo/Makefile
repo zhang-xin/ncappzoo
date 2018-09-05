@@ -59,7 +59,7 @@ compile_model: deps
 	then \
 		echo "compiled model file already exists, skipping compile."; \
 	else \
-		${NCCOMPILE} --data_type FP16 --input_model ${CAFFEMODEL_FILENAME} --input_proto ${PROTOTXT_FILENAME};\
+		${NCCOMPILE} --data_type FP16 --reverse_input_channels --input_model ${CAFFEMODEL_FILENAME} --input_proto ${PROTOTXT_FILENAME};\
 	fi
 
 .PHONY: deps
@@ -79,8 +79,8 @@ compile_cpp:
 	@echo "\ncompile_cpp not implemented yet."
 
 .PHONY: run
-run: deps compile_model compile_cpp
-	@echo "\nrun not implemented yet."
+run: deps compile_model
+	@python3 ./run.py --model tiny-yolo-v1_53000.xml -i ../../data/images/nps_chair.png
 
 .PHONY: help
 help:
@@ -93,7 +93,7 @@ help:
 	@echo "  make caffemodel - downloads the caffemodel for the network"
 	@echo "  make compile_model - runs model compiler for the network";
 	@echo "  make compile_cpp - builds the run_cpp executable example";
-	@echo "  make run - builds and runs the C++ example program";
+	@echo "  make run - runs the example";
 	@echo "  make clean - removes all created content"
 
 clean_caffe_model:
