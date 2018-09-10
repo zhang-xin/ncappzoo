@@ -1,149 +1,144 @@
-#! /usr/bin/env python3
-# Copyright(c) 2017 Intel Corporation. 
-# License: MIT See LICENSE file in root directory.
+#!/usr/bin/env python3
+"""
+ Copyright (c) 2018 Intel Corporation
 
-from mvnc import mvncapi as mvnc
-from sys import argv
-import numpy
-import cv2
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+"""
+from __future__ import print_function
+import sys
+import os
 from os import listdir
 from os.path import isfile, join
-from random import choice
-from timeit import timeit
-from threading import Thread
-from os import system
+import random
+from argparse import ArgumentParser
+import cv2
+import numpy as np
+import logging as log
+from time import time
+from openvino.inference_engine import IENetwork, IEPlugin
 
-if len(argv) != 5:
-	print('Syntax: python3 pytest.py <network directory> <picture directory> <input img width> <input img height>')
-	print('        <network directory> is the directory that contains graph, stat.txt and')
-	print('                            categories.txt')
-	print('        <picture directory> is the directory with several JPEG or PNG images to process')
-	quit()
-	
-img_width  = int(argv[3])
-img_height = int(argv[4])
 
-mvnc.global_set_option(mvnc.GlobalOption.RW_LOG_LEVEL, 2)
+random.seed()
 
-# *****************************************************************
-# Get a list of devices
-# *****************************************************************
 
-devices = mvnc.enumerate_devices()
-if len(devices) == 0:
-	print('No devices found')
-	quit()
-print("num devices: ", len(devices))
-dev_handle = []
-graph_handle = []
+def build_argparser():
+    parser = ArgumentParser()
+    parser.add_argument("-m", "--model", help="Path to an .xml file with a trained model.", required=True, type=str)
+    parser.add_argument("-i", "--input", help="Path to a folder with images or path to an image files", required=True,
+                        type=str)
+    parser.add_argument("--labels", help="Labels mapping file", default=None, type=str)
+    parser.add_argument("--hello", help="Open device but do not do inference", action="store_true")
+    parser.add_argument("--gui", help="Show Window for each iteration", action="store_true")
+    parser.add_argument("-nt", "--number_top", help="Number of top results", default=5, type=int)
+    parser.add_argument("-ni", "--number_iter", help="Number of inference iterations", default=100, type=int)
 
-# *****************************************************************
-# Open the NCS device
-# *****************************************************************
+    return parser
 
-graph_folder=argv[1]
-system("(cd " + graph_folder + "; test -f graph || make compile)")
 
-graph_file_path = join(argv[1],'graph')
+def main():
+    log.basicConfig(format="[ %(levelname)s ] %(message)s", level=log.INFO, stream=sys.stdout)
+    args = build_argparser().parse_args()
+    model_xml = args.model
+    model_bin = os.path.splitext(model_xml)[0] + ".bin"
 
-# *****************************************************************
-# Read and preprocess image file(s)
-# *****************************************************************
-imgarr = []
-selected_files = [f for f in listdir(argv[2]) if isfile(join(argv[2], f))]
-selected_files = selected_files[:100]
+    # Plugin initialization for specified device and load extensions library if specified
+    plugin = IEPlugin(device="MYRIAD")
+    # Read IR
+    log.info("Loading network files:\n\t{}\n\t{}".format(model_xml, model_bin))
+    net = IENetwork.from_ir(model=model_xml, weights=model_bin)
 
-for file in selected_files:
-    fimg = argv[2] + "/" + file
-    print("Opening file ", fimg)
-    img = cv2.imread(fimg)
-    #if img==None:
-    #  continue
-    img = cv2.resize(img, (img_width, img_height))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.astype(numpy.float16)
-    #print(file, img.shape)
-    imgarr.append(img)
+    assert len(net.inputs.keys()) == 1, "Sample supports only single input topologies"
+    assert len(net.outputs) == 1, "Sample supports only single output topologies"
 
-# *****************************************************************
-# Open the device, create fifos and load the graph into each of the devices
-# *****************************************************************
-fifoIn_handle = [] 
-fifoOut_handle = [] 
+    log.info("Preparing input blobs")
+    input_blob = next(iter(net.inputs))
+    out_blob = next(iter(net.outputs))
+    net.batch_size = 1
 
-descIn = [] 
-descOut = [] 
+    n, c, h, w = net.inputs[input_blob]
+    assert n == 1, "Sample supports batch size is 1 only"
 
-for dev_num in range(len(devices)):
-    # add a ncs device to the device handle
-    dev_handle.append(mvnc.Device(devices[dev_num]))
-    # open the device
-    dev_handle[dev_num].open()
-    # load blob
-    with open(graph_file_path, mode='rb') as network_file:
-        blob = network_file.read()
-    # initialize the graph then allocate the graph on the current device
-    graph_handle.append(mvnc.Graph(graph_file_path))
+    # Loading model to the plugin
+    log.info("Loading model to the plugin")
+    exec_net = plugin.load(network=net)
+    del net
 
-    # set up the input and output queues for the current device
-    fifoIn, fifoOut = graph_handle[dev_num].allocate_with_fifos(dev_handle[dev_num], blob)
-    fifoIn_handle.append(fifoIn)
-    fifoOut_handle.append(fifoOut)
-    
-#print("***********************************************")
-#print("Loaded Graphs")
-#print("***********************************************\n\n\n")
+    if args.hello:
+        return
 
-def runparallel(count=100, num=[]):
-    num_devices = num
-    if len(num) == 0: num_devices = range(len(devices))
+    # Read and pre-process input images
+    selected_files = [join(args.input, f) for f in listdir(args.input) if isfile(join(args.input, f))]
+    selected_files = selected_files[:100]
+    imgarr = []
+    for img_f in selected_files:
+        images = np.ndarray(shape=(n, c, h, w))
+        image_clone = None
+        for i in range(n):
+            image = cv2.imread(img_f)
+            image_clone = image
+            if image.shape[:-1] != (h, w):
+                image = cv2.resize(image, (w, h))
+            image = image.transpose((2, 0, 1))  # Change data layout from HWC to CHW
+            images[i] = image
+        imgarr.append([img_f, images, image_clone])
 
-    for i in range(count):
-        # *****************************************************************
-        # Load the Tensor to each of the devices
-        # *****************************************************************
-        for dev_num in num_devices:
-            img = choice(imgarr)
-            # send the 
-            graph_handle[dev_num].queue_inference_with_fifo_elem(fifoIn_handle[dev_num], fifoOut_handle[dev_num], img.astype(numpy.float32), None)
-        # *****************************************************************
-        # Read the result from each of the devices
-        # *****************************************************************
-        for dev_num in num_devices:
-            tensor, userobj = fifoOut_handle[dev_num].read_elem()
+    # Start sync inference
+    log.info("Starting inference ({} iterations)".format(args.number_iter))
+    infer_time = []
+    for i in range(args.number_iter):
+        img_idx = random.randint(0, len(imgarr) - 1)
+        frame = imgarr[img_idx][2]
+        t0 = time()
+        infer_request_handle = exec_net.start_async(request_id=0, inputs={input_blob: imgarr[img_idx][1]})
+        infer_request_handle.wait()
+        infer_time.append((time() - t0) * 1000)
 
-def runthreaded(count=100,num=[]):
-    num_devices = num
-    if len(num) == 0: num_devices = range(len(devices))
-    thread_list = []
-    for ii in num_devices:
-        thread_list.append(Thread(target=runparallel, args=(count,[ii],)))
+        # Processing output blob
+        log.info("Processing output blob")
+        res = infer_request_handle.outputs[out_blob]
+        log.info("On image {}".format(imgarr[img_idx][0]))
+        log.info("Top {} results: ".format(args.number_top))
+        if args.labels:
+            with open(args.labels, 'r') as f:
+                labels_map = [x.split(sep=' ', maxsplit=1)[-1].strip() for x in f]
+        else:
+            labels_map = None
+        for _i, probs in enumerate(res):
+            probs = np.squeeze(probs)
+            top_ind = np.argsort(probs)[-args.number_top:][::-1]
+            for id in top_ind:
+                det_label = labels_map[id] if labels_map else "#{}".format(id)
+                print("{:.7f} {}".format(probs[id], det_label))
+                if args.gui:
+                    cv2.putText(frame, "{:.7f} {}: ".format(probs[id], det_label), (15, 30+(id+1)*10), cv2.FONT_HERSHEY_COMPLEX, 0.5, (10, 10, 200), 1)
+            print("\n")
 
-    for thread in thread_list:
-        thread.start()
-    for thread in thread_list:
-        thread.join()
+        if args.gui:
+            cv2.putText(frame, "Inference time: {} ms".format(infer_time[len(infer_time) - 1]), (15, 15), cv2.FONT_HERSHEY_COMPLEX, 0.5, (200, 10, 10), 1)
+            cv2.putText(frame, "Top {} results: ".format(args.number_top), (15, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (10, 10, 200), 1)
+            cv2.imshow("Classification Results", frame)
+            key = cv2.waitKey(0)
+            if key == 27:
+                break
+            else:
+                continue
+
+    log.info("Average running time of one iteration: {} ms".format(np.average(np.asarray(infer_time))))
+
+    cv2.destroyAllWindows()
+    del exec_net
+    del plugin
+
 
 if __name__ == '__main__':
-    # *****************************************************************
-    # Runs and times runthreaded with 'i' sticks, until all sticks 
-    # run at once
-    # *****************************************************************
-    for i in range(1, len(devices)+1):
-      num = str(list(range(i))) 
-      tot_time = timeit("runthreaded(count=100,num="+num+")", setup="from __main__ import runthreaded", number=1)    
-      print("\n\nRunning " + argv[1] +" on "+str(i)+" sticks threaded      : %0.2f FPS\n\n"%(100.0*i/tot_time))
-
-
-# *****************************************************************
-# Close/clean up fifos, graphs, and devices
-# *****************************************************************
-for f_handle in fifoIn_handle + fifoOut_handle:
-    f_handle.destroy()
-for g_handle in graph_handle:
-    g_handle.destroy()
-for d_handle in dev_handle:
-    d_handle.close()
-    d_handle.destroy()
-
-#print('\n\nFinished\n\n')
+    sys.exit(main() or 0)

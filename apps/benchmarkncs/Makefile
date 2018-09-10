@@ -9,44 +9,44 @@ run: run_googlenet run_alexnet run_squeezenet run_agenet run_gendernet
 
 .PHONY: compile_googlenet
 compile_googlenet:
-	(cd ../../caffe/GoogLeNet; make compile; cd ../../apps/benchmarkncs;)
+	(cd ../../caffe/GoogLeNet; make compile_model; cd ../../apps/benchmarkncs;)
 
 .PHONY: compile_alexnet
 compile_alexnet:
-	(cd ../../caffe/AlexNet; make compile; cd ../../apps/benchmarkncs;)
+	(cd ../../caffe/AlexNet; make compile_model; cd ../../apps/benchmarkncs;)
 
 .PHONY: compile_squeezenet
 compile_squeezenet:
-	(cd ../../caffe/SqueezeNet; make compile; cd ../../apps/benchmarkncs;)
+	(cd ../../caffe/SqueezeNet; make compile_model; cd ../../apps/benchmarkncs;)
 
 .PHONY: compile_agenet
 compile_agenet:
-	(cd ../../caffe/AgeNet; make compile; cd ../../apps/benchmarkncs;)
+	(cd ../../caffe/AgeNet; make compile_model; cd ../../apps/benchmarkncs;)
 
 .PHONY: compile_gendernet
 compile_gendernet:
-	(cd ../../caffe/GenderNet; make compile; cd ../../apps/benchmarkncs;)
+	(cd ../../caffe/GenderNet; make compile_model; cd ../../apps/benchmarkncs;)
 
 
 .PHONY: run_googlenet
 run_googlenet: compile_googlenet
-	@python3 ./benchmarkncs.py ../../caffe/GoogLeNet ../../data/images 224 224
+	@python3 ./benchmarkncs.py --model ../../caffe/GoogLeNet/bvlc_googlenet.xml --input ../../data/images
 
 .PHONY: run_alexnet
 run_alexnet: compile_alexnet
-	@python3 ./benchmarkncs.py ../../caffe/AlexNet ../../data/images 227 227
+	@python3 ./benchmarkncs.py --model ../../caffe/AlexNet/bvlc_alexnet.xml --input ../../data/images
 
 .PHONY: run_squeezenet
 run_squeezenet: compile_squeezenet
-	@python3 ./benchmarkncs.py ../../caffe/SqueezeNet ../../data/images 227 227
+	@python3 ./benchmarkncs.py --model ../../caffe/SqueezeNet/squeezenet_v1.0.xml --input ../../data/images
 
 .PHONY: run_agenet
 run_agenet: compile_agenet
-	@python3 ./benchmarkncs.py ../../caffe/AgeNet ../../data/images 227 227
+	@python3 ./benchmarkncs.py --model ../../caffe/AgeNet/age_net.xml --input ../../data/images
 
 .PHONY: run_gendernet
 run_gendernet: compile_gendernet
-	@python3 ./benchmarkncs.py ../../caffe/GenderNet ../../data/images 227 227
+	@python3 ./benchmarkncs.py --model ../../caffe/GenderNet/gender_net.xml --input ../../data/images
 
 .PHONY: help
 help:
