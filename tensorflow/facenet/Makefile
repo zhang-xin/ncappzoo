@@ -71,7 +71,7 @@ incept_res_py: pictures
 
 
 .PHONY: compile_model
-compile_model: deps
+compile_model: deps model
 	@echo "\nmaking compile_model"; \
 	if [ -e ${MODEL_DIR_NCS}/${MODEL_FILENAME_PREFIX_NCS}.xml ] ; \
 	then \
