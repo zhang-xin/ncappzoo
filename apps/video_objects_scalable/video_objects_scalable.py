@@ -4,7 +4,7 @@
 # License: MIT See LICENSE file in root directory.
 
 
-from mvnc import mvncapi as mvnc
+from openvino.inference_engine import IENetwork, IEPlugin
 from video_processor import VideoProcessor
 from ssd_mobilenet_processor import SsdMobileNetProcessor
 import cv2
@@ -18,11 +18,11 @@ from sys import argv
 # default is to accept all object clasifications.
 # for example if object_classifications_mask[1] == 0 then
 #    will ignore aeroplanes
-object_classifications_mask = [1, 1, 1, 1, 1, 1, 1,
-                               1, 1, 1, 1, 1, 1, 1,
-                               1, 1, 1, 1, 1, 1, 1]
+object_classifications_mask = numpy.ones(80)
+DEFAULT_REST_SECONDS = 10
+rest_seconds = DEFAULT_REST_SECONDS
 
-NETWORK_GRAPH_FILENAME = "./graph"
+model = os.path.join(os.getcwd(), 'frozen_inference_graph.xml')
 
 # the minimal score for a box to be shown
 DEFAULT_INIT_MIN_SCORE = 60
@@ -46,14 +46,7 @@ show_fps = DEFAULT_SHOW_FPS
 DEFAULT_SHOW_NCS_COUNT = True
 
 show_device_count = DEFAULT_SHOW_NCS_COUNT
-device_count = 0
-
-DEFAULT_REST_SECONDS = 10
-rest_seconds = DEFAULT_REST_SECONDS
-rest_throttling_multiplier = 3
-
-DEFAULT_THROTTLE_CHECK_SECONDS = 30.0
-throttle_check_seconds = DEFAULT_THROTTLE_CHECK_SECONDS
+device_count = 2
 
 
 def handle_keys(raw_key:int, obj_detector_list:list):
@@ -106,11 +99,14 @@ def overlay_on_image(display_image:numpy.ndarray, object_info_list:list, fps:flo
     """
     source_image_width = display_image.shape[1]
     source_image_height = display_image.shape[0]
+    labels = SsdMobileNetProcessor.get_classification_labels()
 
     for one_object in object_info_list:
-        percentage = int(one_object[5] * 100)
+        if object_classifications_mask[one_object[0]] == 0:
+            continue
 
-        label_text = one_object[0] + " (" + str(percentage) + "%)"
+        percentage = int(one_object[5] * 100)
+        label_text = labels[one_object[0]] + " (" + str(percentage) + "%)"
         box_left =  int(one_object[1])  # int(object_info[base_index + 3] * source_image_width)
         box_top = int(one_object[2]) # int(object_info[base_index + 4] * source_image_height)
         box_right = int(one_object[3]) # int(object_info[base_index + 5] * source_image_width)
@@ -193,7 +189,7 @@ def handle_args():
 
     :return: False if there was an error with the args, or True if args processed ok.
     """
-    global resize_output, resize_output_width, resize_output_height, min_score_percent, object_classifications_mask,\
+    global model, resize_output, resize_output_width, resize_output_height, min_score_percent, object_classifications_mask,\
            show_fps, show_device_count, device_count, rest_seconds, throttle_check_seconds
 
 
@@ -293,6 +289,15 @@ def handle_args():
                 print("Error with show_device_count argument.  It must be 'True' or 'False' ")
                 return False;
 
+        elif (str(an_arg).lower().startswith('model=')):
+            try:
+                arg, val = str(an_arg).split('=', 1)
+                model = val
+                print ('model: ' + model)
+            except:
+                print("Error with model argument.  It must be existing model file")
+                return False;
+
         elif (str(an_arg).lower().startswith('resize_window=')):
             try:
                 arg, val = str(an_arg).split('=', 1)
@@ -325,6 +330,7 @@ def print_usage():
     print('options:')
 
     print('  help - Prints this message')
+    print('  model - OpenVINO model xml file')
     print('  resize_window - Resizes the GUI window to specified dimensions')
     print('                  must be formated similar to resize_window=1280x720')
     print('                  Default isto not resize, use size of video frames.')
@@ -354,10 +360,6 @@ def print_usage():
     print("                 This must be a positive integer.")
     print("                 Default is: " + str(DEFAULT_REST_SECONDS))
 
-    print("  throttle_check_seconds - The number of seconds between throttle checking during long movies ")
-    print("                 This must be a positive integer.")
-    print("                 Default is: " + str(DEFAULT_THROTTLE_CHECK_SECONDS))
-
     print('  exclude_classes - Comma separated list of object class IDs to exclude from following:')
     index = 0
     for oneLabel in labels:
@@ -368,7 +370,7 @@ def print_usage():
 
     print('')
     print('Example: ')
-    print('python3 video_objects_scalable.py resize_window=1920x1080 init_min_score=50 show_fps=False device_count=2 show_device_count=True rest_seconds=20 throttle_check_seconds=10.0 exclude_classes=5,11')
+    print('python3 video_objects_scalable.py model=model.xml resize_window=1920x1080 init_min_score=50 show_fps=False device_count=2 show_device_count=True rest_seconds=20 exclude_classes=5,11')
 
 
 def print_hot_keys():
@@ -385,19 +387,6 @@ def print_hot_keys():
     print("q  : Quit application")
     print("")
 
-def print_hot_keys():
-    """Prints hot key bindings for the program.
-
-    :return: None
-    """
-    print("")
-    print("Hot keys while running and GUI in focus:")
-    print("-----------------------------------------------")
-    print("b/B: Decrement/Increment minimum box confidence")
-    print("f  : Toggle FPS display in GUI")
-    print("d  : Toggle device count display in GUI")
-    print("q  : Quit application")
-    print("")
 
 def main():
     """Main function for the program.  Everything starts here.
@@ -430,53 +419,34 @@ def main():
                                    (resize_output_width, resize_output_height),
                                    cv2.INTER_LINEAR)
 
-    # Set logging level to only log errors
-    mvnc.global_set_option(mvnc.GlobalOption.RW_LOG_LEVEL, 3)
-
-    devices = mvnc.enumerate_devices()
-    if len(devices) < 1:
-        print('No NCS device detected.')
-        print('Insert device and try again!')
-        return 1
-
-    if (device_count < 1) or (device_count > len(devices)):
-        device_count = len(devices)
-
-
     # Create an object detector processor for each device that opens
     # and store it in our list of processors
     obj_detect_list = list()
-    idle_obj_detect_list = list()
 
-    device_number = 0
+    model_bin = os.path.splitext(model)[0] + ".bin"
 
-    for one_device in devices:
-        try:
-            obj_detect_dev = mvnc.Device(one_device)
-            obj_detect_dev.open()
-            print("opened device " + str(device_number))
-            obj_detector_proc = SsdMobileNetProcessor(NETWORK_GRAPH_FILENAME, obj_detect_dev,
-                                                      inital_box_prob_thresh=min_score_percent / 100.0,
-                                                      classification_mask=object_classifications_mask,
-                                                      name="object detector " + str(device_number))
-            if (device_number < device_count):
-                obj_detect_list.append(obj_detector_proc)
-            else:
-                idle_obj_detect_list.append(obj_detector_proc)
+    # Plugin initialization for specified device and load extensions library if specified
+    plugin = IEPlugin(device="MYRIAD")
+    plugin.set_config({"VPU_FORCE_RESET": "NO"})
+    # Read IR
+    net = IENetwork.from_ir(model=model, weights=model_bin)
 
-            device_number += 1
+    assert len(net.inputs.keys()) == 1, "Demo supports only single input topologies"
+    assert len(net.outputs) == 1, "Demo supports only single output topologies"
 
-        except:
-            print("Could not open device " + str(device_number) + ", trying next device")
-            pass
+    input_blob = next(iter(net.inputs))
+    out_blob = next(iter(net.outputs))
+    net.batch_size = 1
+    n, c, h, w = net.inputs[input_blob]
 
+    for i in range(device_count):
+        exec_net = plugin.load(network=net)
+        obj_detector_proc = SsdMobileNetProcessor(exec_net, n, c, w, h, input_blob, out_blob,
+                                                  inital_box_prob_thresh=min_score_percent / 100.0,
+                                                  name="object detector " + str(i))
+        obj_detect_list.append(obj_detector_proc)
 
-    if len(obj_detect_list) < 1:
-        print('Could not open any NCS devices.')
-        print('Reinsert devices and try again!')
-        return 1
-
-    print("Using " + str(len(obj_detect_list)) + " devices for object detection")
+    print("Created " + str(len(obj_detect_list)) + " Execute Network for object detection")
     print_hot_keys()
 
     cv2.namedWindow(cv_window_name)
@@ -489,7 +459,6 @@ def main():
 
             for one_obj_detect_proc in obj_detect_list:
                 print("using object detector: " + one_obj_detect_proc.get_name())
-                one_obj_detect_proc.drain_queues()
 
             # video processor that will put video frames images on the object detector's input FIFO queue
             video_proc = VideoProcessor(input_video_path + '/' + input_video_file,
@@ -498,7 +467,6 @@ def main():
 
             frame_count = 0
             start_time = time.time()
-            last_throttle_time = start_time
             end_time = start_time
 
             while(True):
@@ -506,10 +474,11 @@ def main():
                 for one_obj_detect_proc in obj_detect_list:
                     try:
                         (filtered_objs, display_image) = one_obj_detect_proc.get_async_inference_result()
+                        if display_image is None:
+                            continue
                     except :
                         print("exception caught in main")
                         raise
-
 
                     # check if the window is visible, this means the user hasn't closed
                     # the window via the X button
@@ -540,7 +509,6 @@ def main():
 
                     frame_count += 1
 
-                    #if (one_obj_detect_proc.is_input_queue_empty()):
                     if (not video_proc.is_processing()):
                         # asssume the video is over.
                         end_time = time.time()
@@ -548,29 +516,10 @@ def main():
                         print('video processor not processing, assuming video is finished.')
                         break
 
-                #if (frame_count % 100) == 0:
-                if ((time.time() - last_throttle_time) > throttle_check_seconds):
-                    #long movie, check for throttling devices
-                    # throttling = one_obj_detect_proc.get_device().get_option(mvnc.DeviceOption.RO_THERMAL_THROTTLING_LEVEL)
-                    last_throttle_time = time.time()
-                    print("movie not done, but going a long time so adjust for throttling")
-                    video_proc.pause()
-                    do_throttle_adjustment(obj_detect_list, idle_obj_detect_list)
-                    video_proc.unpause()
-
                 if (done) : break
 
             frames_per_second = frame_count / (end_time - start_time)
             print('Frames per Second: ' + str(frames_per_second))
-
-            # check for throttling devices and save in throttling list
-            throttling_list = list()
-            for one_obj_detect_proc in obj_detect_list:
-                throttling = one_obj_detect_proc.get_device().get_option(mvnc.DeviceOption.RO_THERMAL_THROTTLING_LEVEL)
-                if (throttling > 0):
-                    print("\nDevice " + one_obj_detect_proc.get_name() + " is throttling, level is: " + str(throttling))
-                    throttling_list.append(one_obj_detect_proc)
-
 
             if (not exit_app):
                 # rest between movies, display an image while resting
@@ -578,33 +527,7 @@ def main():
                                                    (display_image.shape[1], display_image.shape[0]),
                                                    cv2.INTER_LINEAR)
                 cv2.imshow(cv_window_name, resting_display_image)
-
-                if ((len(throttling_list) > len(idle_obj_detect_list))):
-                    # more devices throttling than we have in the idle list
-                    # so do extra rest by applying a multiplier to the rest time
-                    print("throttling devices... resting")
-                    cv2.waitKey(rest_seconds * 1000 * rest_throttling_multiplier)
-                else:
-                    cv2.waitKey(rest_seconds * 1000)
-
-            # remove the throttling devices from the main list and put them at the end so they will
-            # be moved to the idle list with priority
-            for one_throttling in throttling_list:
-                obj_detect_list.remove(one_throttling)
-                obj_detect_list.append(one_throttling)
-
-
-            num_idle = len(idle_obj_detect_list)
-            if (num_idle > len(obj_detect_list)):
-                num_idle = len(obj_detect_list)
-            if (num_idle > 0):
-                # replace one of the devices with an idle device
-                for idle_index in range(0, num_idle):
-                    #for one_idle_proc in idle_obj_detect_list:
-                    obj_detect_list.insert(0, idle_obj_detect_list.pop(0))
-
-                for idle_count in range(0, num_idle):
-                    idle_obj_detect_list.append(obj_detect_list.pop())
+                cv2.waitKey(rest_seconds * 1000)
 
             video_proc.stop_processing()
             video_proc.cleanup()
@@ -615,66 +538,7 @@ def main():
         if (exit_app):
             break
 
-
-    # Clean up the graph and the device
-    for one_obj_detect_proc in obj_detect_list:
-        cv2.waitKey(1)
-        one_obj_detect_proc.cleanup(True)
-
     cv2.destroyAllWindows()
-
-
-def do_throttle_adjustment(obj_detect_list, idle_obj_detect_list):
-    throttling_list = list()
-    for one_obj_detect_proc in obj_detect_list:
-        throttling = one_obj_detect_proc.get_device().get_option(mvnc.DeviceOption.RO_THERMAL_THROTTLING_LEVEL)
-        if (throttling > 0):
-            print("\nDevice " + one_obj_detect_proc.get_name() + " is throttling, level is: " + str(throttling) + "\n")
-            throttling_list.append(one_obj_detect_proc)
-
-    if (len(throttling_list) < 1):
-        return
-
-    for one_obj_detect_proc in obj_detect_list:
-        one_obj_detect_proc.drain_queues()
-
-    for one_idle_proc in idle_obj_detect_list:
-        one_idle_proc.drain_queues()
-
-
-    # remove the throttling devices from the main list and put them at the end so they will
-    # be moved to the idle list with priority
-    for one_throttling in throttling_list:
-        #print("moving " + one_throttling.get_name() + " to end of object detect list")
-        obj_detect_list.remove(one_throttling)
-        obj_detect_list.append(one_throttling)
-
-    num_idle = len(idle_obj_detect_list)
-    if (num_idle > len(obj_detect_list)):
-        num_idle = len(obj_detect_list)
-    #print("number of idle processors after adjusting:" + str(num_idle))
-    if (num_idle > 0):
-        # replace one of the devices with an idle device
-        for idle_index in range(0, num_idle):
-            #print("idle index is: " + str(idle_index))
-            # for one_idle_proc in idle_obj_detect_list:
-            the_idle_to_use = idle_obj_detect_list.pop(0)
-            #print("moving idle : " + the_idle_to_use.get_name() + " to obj detect list")
-            obj_detect_list.insert(0, the_idle_to_use)
-
-        for idle_count in range(0, num_idle):
-            #print("idle count is: " + str(idle_count))
-            the_active_to_move = obj_detect_list.pop()
-            #print("removing from active list: " + the_active_to_move.get_name())
-            idle_obj_detect_list.append(the_active_to_move)
-
-    for one_obj_detect_proc in obj_detect_list:
-        one_obj_detect_proc.drain_queues()
-        print("\nNow using " + one_obj_detect_proc.get_name())
-
-    for one_idle_proc in idle_obj_detect_list:
-        one_idle_proc.drain_queues()
-
 
 
 # main entry point for program. we'll call main() to do what needs to be done.

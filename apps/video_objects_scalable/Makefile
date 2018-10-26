@@ -1,14 +1,6 @@
-
-ifneq ($(findstring movidius, $(PYTHONPATH)), movidius)
-	export PYTHONPATH:=/opt/movidius/caffe/python:$(PYTHONPATH)
-endif
-
-NCCOMPILE = mvNCCompile
-NCPROFILE = mvNCProfile
-NCCHECK   = mvNCCheck
-
-# filenames for the graph files that we'll copy to this directory.
-SSD_MOBILENET_GRAPH_FILENAME = graph
+# filenames for the IE file that we'll copy to this directory.
+SSD_MOBILENET_IE_MODEL = frozen_inference_graph.xml
+SSD_MOBILENET_IE_WEIGHTS = frozen_inference_graph.bin
 
 GET_VIDEOS = wget -c --no-cache -P . https://raw.githubusercontent.com/nealvis/media/master/traffic_vid/licenses.txt; \
              wget -c --no-cache -P . https://raw.githubusercontent.com/nealvis/media/master/traffic_vid/bus_station_6094_960x540.mp4; \
@@ -23,7 +15,7 @@ all: prereqs videos ssd_mobilenet
 .PHONY: ssd_mobilenet
 ssd_mobilenet: 
 	@echo "\nmaking ssd_mobilenet"
-	(cd ../../caffe/SSD_MobileNet; make compile; cd ../../apps/video_objects_scalable; cp ../../caffe/SSD_MobileNet/graph ./${SSD_MOBILENET_GRAPH_FILENAME};)
+	(cd ../../tensorflow/ssd_mobilenet_v2; make compile_model; cd ../../apps/video_objects_scalable; cp ../../tensorflow/ssd_mobilenet_v2/${SSD_MOBILENET_IE_MODEL} .; cp ../../tensorflow/ssd_mobilenet_v2/${SSD_MOBILENET_IE_WEIGHTS} .;)
 
 .PHONY: videos
 videos:
@@ -67,7 +59,8 @@ help:
 .PHONY: clean
 clean: 
 	@echo "\nmaking clean"
-	rm -f ${SSD_MOBILENET_GRAPH_FILENAME}
+	rm -f ${SSD_MOBILENET_IE_MODEL}
+	rm -f ${SSD_MOBILENET_IE_WEIGHTS}
 	rm -f *.mp4
 	rm -f licenses.txt
 

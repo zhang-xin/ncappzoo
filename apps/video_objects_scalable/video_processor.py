@@ -10,7 +10,6 @@ import cv2
 import queue
 import threading
 import time
-from ssd_mobilenet_processor import SsdMobileNetProcessor
 from queue import Queue
 
 class VideoProcessor:
@@ -200,12 +199,6 @@ class VideoProcessor:
                         print("No image from video device, exiting")
                         done = True
                         break
-
-                    # wait until there is room on the network processor's input queue.
-                    # if we don't do this and clean up is called from another thread then
-                    # there is a race condition
-                    while (one_network_proc.is_input_queue_full() and (not (self._end_flag))):
-                        time.sleep(0.1)
 
                     if (not (self._end_flag)):
                         one_network_proc.start_aysnc_inference(input_image)
