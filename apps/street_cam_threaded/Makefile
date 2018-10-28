@@ -1,15 +1,8 @@
-
-ifneq ($(findstring movidius, $(PYTHONPATH)), movidius)
-	export PYTHONPATH:=/opt/movidius/caffe/python:$(PYTHONPATH)
-endif
-
-NCCOMPILE = mvNCCompile
-NCPROFILE = mvNCProfile
-NCCHECK   = mvNCCheck
-
 # filenames for the graph files that we'll copy to this directory.
-YOLO_TINY_GRAPH_FILENAME = yolo_tiny.graph
-GOOGLENET_GRAPH_FILENAME = googlenet.graph
+YOLO_TINY_IE_MODEL = tiny-yolo-v1_53000.xml
+YOLO_TINY_IE_WEIGHTS = tiny-yolo-v1_53000.bin
+GOOGLENET_IE_MODEL = bvlc_googlenet.xml
+GOOGLENET_IE_WEIGHTS = bvlc_googlenet.bin
 
 GET_VIDEOS = wget -c --no-cache -P . https://raw.githubusercontent.com/nealvis/media/master/traffic_vid/licenses.txt; \
              wget -c --no-cache -P . https://raw.githubusercontent.com/nealvis/media/master/traffic_vid/bus_station_6094_960x540.mp4; \
@@ -40,12 +33,12 @@ prereqs:
 .PHONY: googlenet
 googlenet: 
 	@echo "\nmaking googlenet"
-	(cd ../../caffe/GoogLeNet; make compile; cd ../../apps/street_cam_threaded; cp ../../caffe/GoogLeNet/graph ./${GOOGLENET_GRAPH_FILENAME};) 
+	(cd ../../caffe/GoogLeNet; make compile_model; cd ../../apps/street_cam_threaded; cp ../../caffe/GoogLeNet/${GOOGLENET_IE_MODEL} .; cp ../../caffe/GoogLeNet/${GOOGLENET_IE_WEIGHTS} .;)
 
 .PHONY: tiny_yolo
 tiny_yolo: 
 	@echo "\nmaking tiny_yolo"
-	(cd ../../caffe/TinyYolo; make compile; cd ../../apps/street_cam_threaded; cp ../../caffe/TinyYolo/graph ./${YOLO_TINY_GRAPH_FILENAME};)
+	(cd ../../caffe/TinyYolo; make compile_model; cd ../../apps/street_cam_threaded; cp ../../caffe/TinyYolo/${YOLO_TINY_IE_MODEL} .; cp ../../caffe/TinyYolo/${YOLO_TINY_IE_WEIGHTS} .;)
 
 
 .PHONY: compile
@@ -84,8 +77,10 @@ help:
 .PHONY: clean
 clean: 
 	@echo "\nmaking clean"
-	rm -f ${YOLO_TINY_GRAPH_FILENAME}
-	rm -f ${GOOGLENET_GRAPH_FILENAME}
+	rm -f ${YOLO_TINY_IE_MODEL}
+	rm -f ${YOLO_TINY_IE_WEIGHTS}
+	rm -f ${GOOGLENET_IE_MODEL}
+	rm -f ${GOOGLENET_IE_WEIGHTS}
 	rm -f *.mp4
 	rm -f licenses.txt
 

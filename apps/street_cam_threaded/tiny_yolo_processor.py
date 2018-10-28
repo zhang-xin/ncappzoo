@@ -6,7 +6,8 @@
 
 # processes images via tiny yolo
 
-from mvnc import mvncapi as mvnc
+from openvino.inference_engine import IENetwork, IEPlugin
+import os
 import numpy as np
 import cv2
 import queue
@@ -14,15 +15,9 @@ import threading
 
 
 class tiny_yolo_processor:
-
-    # Tiny Yolo assumes input images are these dimensions.
-    TY_NETWORK_IMAGE_WIDTH = 448
-    TY_NETWORK_IMAGE_HEIGHT = 448
-
     # initialize an instance of the class
-    # tiny_yolo_graph_file is the path and filename to the tiny yolo graph
-    #     file that was created by the ncsdk compiler
-    # ncs_device is an open ncs device object
+    # model is the file path to the tiny yolo IE model
+    # plugin is an OpenVINO IEPlugin object
     # input_queue is a queue object from which images will be pulled and
     #     inferences will be processed on.
     # output_queue is a queue object on which the tiny yolo inference results will
@@ -39,24 +34,23 @@ class tiny_yolo_processor:
     #     returned from the inferences
     # initial_max_iou is the inital value for the max iou which determines duplicate
     #     boxes
-    def __init__(self, tiny_yolo_graph_file: str, ncs_device: mvnc.Device, input_queue: queue.Queue, output_queue: queue.Queue,
+    def __init__(self, model: str, plugin: IEPlugin, input_queue: queue.Queue, output_queue: queue.Queue,
                  inital_box_prob_thresh: float, initial_max_iou: float, queue_wait_input:float, queue_wait_output:float):
+        weights = os.path.splitext(model)[0] + ".bin"
+        assert os.path.isfile(model), "Cannot load input file %s" % model
+        assert os.path.isfile(weights), "Cannot load input file %s" % weights
+        net = IENetwork.from_ir(model=model, weights=weights)
+
+        assert len(net.inputs.keys()) == 1, "Sample supports only single input topologies"
+        assert len(net.outputs) == 1, "Sample supports only single output topologies"
+        self._input_blob = next(iter(net.inputs))
+        self._out_blob = next(iter(net.outputs))
+        self._exec_net = plugin.load(network=net, num_requests=1)
+        self._n, self._c, self._h, self._w = net.inputs[self._input_blob]
+        del net
 
         self._queue_wait_input = queue_wait_input
         self._queue_wait_output = queue_wait_output
-
-        # Load googlenet graph from disk and allocate graph via API
-        try:
-            with open(tiny_yolo_graph_file, mode='rb') as ty_file:
-                ty_graph_from_disk = ty_file.read()
-            self._ty_graph = mvnc.Graph("Tiny Yolo Graph")
-            self._fifo_in, self._fifo_out = self._ty_graph.allocate_with_fifos(ncs_device, ty_graph_from_disk)
-
-        except:
-            print('\n\n')
-            print('Error - could not load tiny yolo graph file: ' + tiny_yolo_graph_file)
-            print('\n\n')
-            raise
 
         self._box_probability_threshold = inital_box_prob_thresh
         self._max_iou = initial_max_iou
@@ -68,9 +62,7 @@ class tiny_yolo_processor:
 
     # call once when done with the instance of the class
     def cleanup(self):
-        self._fifo_in.destroy()
-        self._fifo_out.destroy()
-        self._ty_graph.destroy()
+        del self._exec_net
 
     # start asynchronous processing of the images on the input queue via a worker thread
     # and place inference results on the output queue
@@ -108,30 +100,17 @@ class tiny_yolo_processor:
         input_image_width = input_image.shape[1]
         input_image_height = input_image.shape[0]
 
-        # resize image to network width and height
-        # then convert to float32, normalize (divide by 255),
-        # and finally convert to float16 to pass to LoadTensor as input
-        # for an inference
-        # this returns a new image so the input_image is unchanged
-        inference_image = cv2.resize(input_image,
-                                 (tiny_yolo_processor.TY_NETWORK_IMAGE_WIDTH,
-                                  tiny_yolo_processor.TY_NETWORK_IMAGE_HEIGHT),
-                                 cv2.INTER_LINEAR)
-
-        # modify inference_image for TinyYolo input
-        inference_image = inference_image[:, :, ::-1]  # convert to RGB
-        inference_image = inference_image.astype(np.float32)
+        inference_image = cv2.resize(input_image, (self._w, self._h), cv2.INTER_LINEAR)
+        inference_image = inference_image.transpose((2, 0, 1)) # change data layout from HWC to CHW
+        inference_image = inference_image.reshape((self._n, self._c, self._h, self._w))
         inference_image = np.divide(inference_image, 255.0)
 
         # Load tensor and get result.  This executes the inference on the NCS
-        self._ty_graph.queue_inference_with_fifo_elem(self._fifo_in, self._fifo_out, inference_image.astype(np.float32), None)
-        output, userobj = self._fifo_out.read_elem()
-
-        # until API is fixed to return mutable output.
-        output.flags.writeable = True
+        res = self._exec_net.infer({self._input_blob: inference_image})
+        output = res[self._out_blob][0]
 
         # filter out all the objects/boxes that don't meet thresholds
-        return self._filter_objects(output, input_image_width, input_image_height)
+        return self._filter_objects(output.astype(np.float32), input_image_width, input_image_height)
 
 
     # the worker thread which handles the asynchronous processing of images on the input

@@ -4,10 +4,9 @@
 # License: MIT See LICENSE file in root directory.
 # NPS
 
-from mvnc import mvncapi as mvnc
+from openvino.inference_engine import IENetwork, IEPlugin
 import sys
 import numpy as np
-from sys import argv
 import os
 import cv2
 import time
@@ -17,9 +16,9 @@ from googlenet_processor import googlenet_processor
 from tiny_yolo_processor import tiny_yolo_processor
 from video_processor import video_processor
 
-# the networks compiled for NCS via ncsdk tools
-TINY_YOLO_GRAPH_FILE = './yolo_tiny.graph'
-GOOGLENET_GRAPH_FILE = './googlenet.graph'
+# the networks compiled for NCS via OpenVINO Model Optimizer
+TINY_YOLO_IE_MODEL = 'tiny-yolo-v1_53000.xml'
+GOOGLENET_IE_MODEL = 'bvlc_googlenet.xml'
 
 VIDEO_QUEUE_PUT_WAIT_MAX = 4
 VIDEO_QUEUE_FULL_SLEEP_SECONDS = 0.01
@@ -40,16 +39,15 @@ gn_input_queue = queue.Queue(GN_INPUT_QUEUE_SIZE)
 gn_output_queue = queue.Queue(GN_OUTPUT_QUEUE_SIZE)
 
 ty_proc = None
-#gn_proc = None
 gn_proc_list = []
-gn_device_list = []
 
 video_proc = None
 video_queue = None
 
-# if True will do googlenet inferences for each object returned from
-# tiny yolo, if False will only do the tiny yolo inferences
-do_gn = False
+# if >0 will do googlenet inferences with the number of ExecutableNetwork for
+# each object returned from tiny yolo, if 0 will only do the tiny yolo inferences
+do_gn = 0
+saved_do_gn = 0
 
 # read video files from this directory
 input_video_path = '.'
@@ -193,7 +191,7 @@ def overlay_on_image(display_image, filtered_objects):
 def get_googlenet_classifications(source_image, filtered_objects):
     global gn_input_queue, gn_output_queue
 
-    if (not do_gn):
+    if (do_gn == 0):
         for obj_index in range(len(filtered_objects)):
             filtered_objects[obj_index] += (0, '', 0.0)
         return
@@ -266,7 +264,7 @@ def get_googlenet_classifications(source_image, filtered_objects):
 def get_googlenet_classifications_no_queue(gn_proc, source_image, filtered_objects):
     global gn_input_queue, gn_output_queue
 
-    if (not do_gn):
+    if (do_gn == 0):
         for obj_index in range(len(filtered_objects)):
             filtered_objects[obj_index] += (0, '', 0.0)
         return
@@ -399,29 +397,33 @@ def handle_keys(raw_key):
             do_unpause()
 
     elif (ascii_code == ord('2')):
-        do_gn = not do_gn
-        print("New do googlenet value is " + str(do_gn))
+        if do_gn > 0:
+            saved_do_gn = do_gn
+            do_gn = 0
+        elif saved_do_gn > 0:
+            do_gn = saved_do_gn
+        print("New do googlenet value is " + int(do_gn))
 
     return True
 
 # prints usage information
 def print_usage():
     print('\nusage: ')
-    print('python3 street_cam_threaded.py [help][googlenet=on|off][resize_window=<width>x<height>]')
+    print('python3 street_cam_threaded.py [help][googlenet=<count>][resize_window=<width>x<height>]')
     print('')
     print('options:')
     print('  help - Prints this message')
     print('  resize_window - Resizes the GUI window to specified dimensions')
     print('                  must be formatted similar to resize_window=1280x720')
     print('                  default behavior is to use source video frame size')
-    print('  googlenet - Sets initial state for googlenet processing')
-    print('              must be formatted as googlenet=on or googlenet=off')
-    print('              When on all tiny yolo objects will be passed to googlenet')
-    print('              for further classification, when off only tiny yolo will be used')
-    print('              Default behavior is off')
+    print('  googlenet - Sets initial network count for googlenet processing')
+    print('              must be formatted similar as googlenet=1')
+    print('              When >0 all tiny yolo objects will be passed to googlenet')
+    print('              for further classification, when 0 only tiny yolo will be used')
+    print('              Default is 0')
     print('')
     print('Example: ')
-    print('python3 street_cam_threaded.py googlenet=on resize_window=1920x1080')
+    print('python3 street_cam_threaded.py googlenet=1 resize_window=1920x1080')
 
 # prints information for the user when program starts.
 def print_info():
@@ -442,8 +444,8 @@ def print_info():
 # set accordingly
 def handle_args():
     global resize_output, resize_output_width, resize_output_height, do_gn
-    for an_arg in argv:
-        if (an_arg == argv[0]):
+    for an_arg in sys.argv:
+        if (an_arg == sys.argv[0]):
             continue
 
         elif (str(an_arg).lower() == 'help'):
@@ -451,14 +453,11 @@ def handle_args():
 
         elif (str(an_arg).startswith('googlenet=')):
             arg, val = str(an_arg).split('=', 1)
-            if (str(val).lower() == 'on'):
-                print('googlenet processing ON')
-                do_gn = True
-            elif (str(val).lower() == 'off'):
-                print('googlenet processing OFF')
-                do_gn = False
+            if (int(val) > 0):
+                print('googlenet processing ON, count = %d' % int(val))
+                do_gn = int(val)
             else:
-                return False
+                do_gn = 0
 
         elif (str(an_arg).startswith('resize_window=')):
             try:
@@ -480,26 +479,16 @@ def handle_args():
 
 
 # Initializes the googlenet processors and devices.
-# enumerated_devices is a list of NCS devices to use for googlenet processing
-#     Each device in the list will be used for google net processing.
+# plugin is OpenVINO IEPlugin object
 # gn_proc_list is a list that will be populated with initialized googlenet_processor
 #     instances which will each be intialized with the same input and output queues
 #     to process googlenet inferences for the program
-# gn_device_list is a list that will be populated with the opened NCS devices
-#     initialized for googlenet processing.  The device at index N corresponds to the
-#     googlenet_processor at index N.  These device will need to be closed via the ncapi
 # return True if worked or False if error
-def init_gn_lists(enumerated_devices, gn_proc_list, gn_device_list):
-
+def init_gn_lists(plugin, gn_proc_list):
     try:
-        for one_device in enumerated_devices:
-            gn_device = mvnc.Device(one_device)
-            gn_device.open()
-
-            gn_proc = googlenet_processor(GOOGLENET_GRAPH_FILE, gn_device, gn_input_queue, gn_output_queue,
-                                      QUEUE_WAIT_MAX, QUEUE_WAIT_MAX)
-            gn_proc_list.insert(0, gn_proc)
-            gn_device_list.insert(0, gn_device)
+        gn_proc = googlenet_processor(os.path.join(os.getcwd(), GOOGLENET_IE_MODEL), plugin,
+                                      gn_input_queue, gn_output_queue, QUEUE_WAIT_MAX, QUEUE_WAIT_MAX)
+        gn_proc_list.append(gn_proc)
     except:
         return False
 
@@ -530,23 +519,15 @@ def main():
     # print keyboard mapping to console so user will know what can be adjusted.
     print_info()
 
-    # Set logging level to only log errors
-    mvnc.global_set_option(mvnc.GlobalOption.RW_LOG_LEVEL, 3)
-    devices = mvnc.enumerate_devices()
-    if len(devices) < 2:
-        print('This application requires two NCS devices.')
-        print('Insert two devices and try again!')
-        return 1
-
-    # use the first NCS device for tiny yolo processing
-    ty_device = mvnc.Device(devices[0])
-    ty_device.open()
+    plugin = IEPlugin(device="MYRIAD")
+    plugin.set_config({"VPU_FORCE_RESET": "NO"})
 
     # use the rest of the NCS devices for googlenet processing
-    if (not init_gn_lists(devices[1:], gn_proc_list, gn_device_list)):
-        print('Error initializing NCS devices for GoogleNet')
-        return 1
-    print ('Using ' + str(len(gn_proc_list)) + ' NCS devices for GoogLeNet')
+    if do_gn != 0:
+        if (not init_gn_lists(plugin, gn_proc_list)):
+            print('Error initializing NCS devices for GoogleNet')
+            return 1
+        print ('Using ' + str(len(gn_proc_list)) + ' NCS devices for GoogLeNet')
 
     print('Starting GUI, press Q to quit')
 
@@ -561,7 +542,7 @@ def main():
     # Setup tiny_yolo_processor that reads from the video queue
     # and writes to its own ty_output_queue
     ty_output_queue = queue.Queue(TY_OUTPUT_QUEUE_SIZE)
-    ty_proc = tiny_yolo_processor(TINY_YOLO_GRAPH_FILE, ty_device, video_queue, ty_output_queue,
+    ty_proc = tiny_yolo_processor(os.path.join(os.getcwd(), TINY_YOLO_IE_MODEL), plugin, video_queue, ty_output_queue,
                                   TY_INITIAL_BOX_PROBABILITY_THRESHOLD, TY_INITIAL_MAX_IOU,
                                   QUEUE_WAIT_MAX, QUEUE_WAIT_MAX)
 
@@ -671,19 +652,6 @@ def main():
                 break
         if (exit_app) :
             break
-
-    # clean up tiny yolo
-    ty_proc.cleanup()
-    ty_device.close()
-    ty_device.destroy()
-
-    # Clean up googlenet
-    for gn_index in range(0, len(gn_proc_list)):
-        cv2.waitKey(1)
-        gn_proc_list[gn_index].cleanup()
-        gn_device_list[gn_index].close()
-        gn_device_list[gn_index].destroy()
-
 
     print('Finished')
 

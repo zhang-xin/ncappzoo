@@ -6,7 +6,8 @@
 
 # processes images via googlenet
 
-from mvnc import mvncapi as mvnc
+from openvino.inference_engine import IENetwork, IEPlugin
+import os
 import numpy as np
 import cv2
 import queue
@@ -14,21 +15,13 @@ import threading
 
 
 class googlenet_processor:
-    # GoogLeNet assumes input images are these dimensions
-    GN_NETWORK_IMAGE_WIDTH = 224
-    GN_NETWORK_IMAGE_HEIGHT = 224
-
     EXAMPLES_BASE_DIR = '../../'
     ILSVRC_2012_dir = EXAMPLES_BASE_DIR + 'data/ilsvrc12/'
-
-    MEAN_FILE_NAME = ILSVRC_2012_dir + 'ilsvrc_2012_mean.npy'
-
     LABELS_FILE_NAME = ILSVRC_2012_dir + 'synset_words.txt'
 
     # initialize the class instance
-    # googlenet_graph_file is the path and filename of the googlenet graph file
-    #     produced via the ncsdk compiler.
-    # ncs_device is an open Device instance from the ncsdk
+    # model is the file path of the googlenet IE model
+    # plugin is an OpenVINO IEPlugin object
     # input_queue is a queue instance from which images will be pulled that are
     #     in turn processed (inferences are run on) via the NCS device
     #     each item on the queue should be an opencv image.  it will be resized
@@ -38,30 +31,11 @@ class googlenet_processor:
     #         index of the most likely classification from the inference.
     #         label for the most likely classification from the inference.
     #         probability the most likely classification from the inference.
-    def __init__(self, googlenet_graph_file: str, ncs_device: mvnc.Device, input_queue: queue.Queue, output_queue:queue.Queue,
-                 queue_wait_input: float, queue_wait_output:float):
-
-        self._queue_wait_input = queue_wait_input
-        self._queue_wait_output = queue_wait_output
-
-        # GoogLenet initialization
-
-        # googlenet mean values will be read in from .npy file
-        self._gn_mean = [0., 0., 0.]
-
+    def __init__(self, model: str, plugin: IEPlugin, input_queue: queue.Queue,
+                 output_queue: queue.Queue, queue_wait_input: float, queue_wait_output: float):
         # labels to display along with boxes if googlenet classification is good
         # these will be read in from the synset_words.txt file for ilsvrc12
         self._gn_labels = [""]
-
-        # loading the means from file
-        try:
-            self._gn_mean = np.load(googlenet_processor.MEAN_FILE_NAME).mean(1).mean(1)
-        except:
-            print('\n\n')
-            print('Error - could not load means from ' + googlenet_processor.MEAN_FILE_NAME)
-            print('\n\n')
-            raise
-
         # loading the labels from file
         try:
             self._gn_labels = np.loadtxt(googlenet_processor.LABELS_FILE_NAME, str, delimiter='\t')
@@ -74,30 +48,29 @@ class googlenet_processor:
             print('\n\n')
             raise
 
-        # Load googlenet graph from disk and allocate graph via API
-        try:
-            with open(googlenet_graph_file, mode='rb') as gn_file:
-                gn_graph_from_disk = gn_file.read()
-            self._gn_graph = mvnc.Graph("GoogLeNet Graph")
-            self._fifo_in, self._fifo_out = self._gn_graph.allocate_with_fifos(ncs_device, gn_graph_from_disk)
+        weights = os.path.splitext(model)[0] + ".bin"
+        assert os.path.isfile(model), "Cannot load input file %s" % model
+        assert os.path.isfile(weights), "Cannot load input file %s" % weights
+        net = IENetwork.from_ir(model=model, weights=weights)
 
-        except Exception as caught_except:
-            print(caught_except)
-            print('\n\n')
-            print('Error - could not load googlenet graph file: ' + googlenet_graph_file)
-            print('\n\n')
-            raise
+        assert len(net.inputs.keys()) == 1, "Sample supports only single input topologies"
+        assert len(net.outputs) == 1, "Sample supports only single output topologies"
+        self._input_blob = next(iter(net.inputs))
+        self._out_blob = next(iter(net.outputs))
+        self._exec_net = plugin.load(network=net, num_requests=1)
+        self._n, self._c, self._h, self._w = net.inputs[self._input_blob]
+        del net
+
+        self._queue_wait_input = queue_wait_input
+        self._queue_wait_output = queue_wait_output
 
         self._input_queue = input_queue
         self._output_queue = output_queue
         self._worker_thread = threading.Thread(target=self._do_work, args=())
 
-
     # call one time when the instance will no longer be used.
     def cleanup(self):
-        self._fifo_in.destroy()
-        self._fifo_out.destroy()
-        self._gn_graph.destroy()
+        del self._exec_net
 
     # start asynchronous processing on a worker thread that will pull images off the input queue and
     # placing results on the output queue
@@ -145,23 +118,15 @@ class googlenet_processor:
     #   probability the most likely classification from the inference.
     def googlenet_inference(self, input_image:np.ndarray, user_obj):
 
-        # Resize image to googlenet network width and height
-        # then convert to float32, normalize (divide by 255),
-        # and finally convert to convert to float16 to pass to LoadTensor as input for an inference
-        input_image = cv2.resize(input_image, (googlenet_processor.GN_NETWORK_IMAGE_WIDTH,
-                                               googlenet_processor.GN_NETWORK_IMAGE_HEIGHT),
-                                 cv2.INTER_LINEAR)
-
-        input_image = input_image.astype(np.float32)
-        input_image[:, :, 0] = (input_image[:, :, 0] - self._gn_mean[0])
-        input_image[:, :, 1] = (input_image[:, :, 1] - self._gn_mean[1])
-        input_image[:, :, 2] = (input_image[:, :, 2] - self._gn_mean[2])
+        input_image = cv2.resize(input_image, (self._w, self._h), cv2.INTER_LINEAR)
+        input_image = input_image.transpose((2, 0, 1)) # change data layout from HWC to CHW
+        input_image = input_image.reshape((self._n, self._c, self._h, self._w))
 
         # Load tensor and get result.  This executes the inference on the NCS
-        self._gn_graph.queue_inference_with_fifo_elem(self._fifo_in, self._fifo_out, input_image.astype(np.float32), None)
-        output, userobj = self._fifo_out.read_elem()
+        res = self._exec_net.infer({self._input_blob: input_image})
+        output = res[self._out_blob][0]
 
-        order = output.argsort()[::-1][:1]
+        order = np.argsort(output)[-5:][::-1]
 
         '''
         print('\n------- prediction --------')
