@@ -66,7 +66,7 @@ profile: prototxt
 .PHONY: compile_model
 compile_model: deps
 	@echo "\nmaking compile"
-	${NCCOMPILE} --data_type FP16 --mean_values [104.00698793,116.66876762,122.67891434] --input_model ${CAFFEMODEL_FILENAME} --input_proto ${PROTOTXT_FILENAME}
+	${NCCOMPILE} --data_type FP16 --reverse_input_channels --mean_values [104.00698793,116.66876762,122.67891434] --input_model ${CAFFEMODEL_FILENAME} --input_proto ${PROTOTXT_FILENAME}
 
 
 .PHONY: deps
